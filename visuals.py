@@ -311,3 +311,60 @@ class RecogBars:
             c.create_text(bar_x0 + bar_w + 22, y + bh / 2, text=f"{p:.0%}",
                           fill=(ACCENT_2 if hit else DASH_MUTED),
                           font=("Consolas", 9), tags=tags)
+
+
+# ================================================================ 问答面板
+class QAPanel:
+    """预设回答板块：把最近一次的「问 - 答」放大显示，下面列历史。"""
+
+    def __init__(self, canvas, x0, y0, x1, y1, title=""):
+        self.c = canvas
+        self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+        self.title = title
+
+    def draw(self, history, tags="qa"):
+        """history: [(问题, 回答, 得分, 是否命中, 命中词), ...]，最新的在前。"""
+        c = self.c
+        c.delete(tags)
+        W = self.x1 - self.x0
+        c.create_rectangle(self.x0, self.y0, self.x1, self.y1,
+                           fill=DASH_PANEL, outline=DASH_BORDER, tags=tags)
+        if self.title:
+            c.create_text(self.x0 + 10, self.y0 + 10, text=self.title, anchor="nw",
+                          fill=DASH_TEXT, font=("Microsoft YaHei UI", 9, "bold"),
+                          tags=tags)
+        if not history:
+            c.create_text((self.x0 + self.x1) / 2, (self.y0 + self.y1) / 2,
+                          text=_T("提问后这里会显示回答"),
+                          fill=DASH_MUTED, font=("Microsoft YaHei UI", 9), tags=tags)
+            return
+
+        q, a, score, ok, hit = history[0]
+        y = self.y0 + 32
+        c.create_text(self.x0 + 12, y, text=_T("问") + "  " + str(q)[:44], anchor="nw",
+                      width=W - 24, fill=DASH_MUTED,
+                      font=("Microsoft YaHei UI", 9), tags=tags)
+        y += 24
+        item = c.create_text(self.x0 + 12, y, text=str(a), anchor="nw", width=W - 24,
+                             fill=(ACCENT_2 if ok else "#F25C54"),
+                             font=("Microsoft YaHei UI", 13, "bold"), tags=tags)
+        bb = c.bbox(item)
+        y = (bb[3] if bb else y + 34) + 12
+        meta = (_T("✓命中") if ok else _T("✗未命中")) + "   " \
+            + _T("分=") + f"{score:.2f}   " + _T("命中词=") + f"{hit}"
+        c.create_text(self.x0 + 12, y, text=meta, anchor="nw", width=W - 24,
+                      fill=DASH_MUTED, font=("Microsoft YaHei UI", 8), tags=tags)
+        y += 28
+
+        if len(history) > 1:
+            c.create_text(self.x0 + 12, y, text=_T("之前问过"), anchor="nw",
+                          fill=DASH_TEXT, font=("Microsoft YaHei UI", 8, "bold"),
+                          tags=tags)
+            y += 18
+            for (q2, a2, _s2, _ok2, _h2) in history[1:5]:
+                if y > self.y1 - 18:
+                    break
+                c.create_text(self.x0 + 14, y,
+                              text=f"{str(q2)[:14]} → {str(a2)[:20]}", anchor="nw",
+                              fill=DASH_MUTED, font=("Microsoft YaHei UI", 8), tags=tags)
+                y += 17

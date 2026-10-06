@@ -345,6 +345,7 @@ class App:
             "ga": A.GA(),
             "recog": None,
             "recog_kind": "",
+            "qa_history": [],
             "log": [],
             "trained": False,
         }
@@ -359,6 +360,7 @@ class App:
 
     def _build_ui(self):
         b = BOARDS[self.board]
+        self.log_text = None
         header = tk.Frame(self.root, bg="#0F172A", height=HEADER_H)
         header.pack(side="top", fill="x")
         header.pack_propagate(False)
@@ -479,9 +481,36 @@ class App:
         tk.Label(dash, text=T("可视化"), bg=DASH_BG, fg=DASH_TEXT,
                  font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", padx=12, pady=(10, 4))
         self.dash_canvas = tk.Canvas(dash, bg=DASH_BG, highlightthickness=0,
-                                     width=DASH_W - 24, height=740)
+                                     width=DASH_W - 24, height=430)
         self.dash_canvas.pack(padx=12, fill="both", expand=True)
         self.dash = self._make_dash()
+
+        out_head = tk.Frame(dash, bg=DASH_BG)
+        out_head.pack(fill="x", padx=12, pady=(10, 3))
+        tk.Label(out_head, text=T("输出"), bg=DASH_BG, fg=DASH_TEXT,
+                 font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
+        clr = tk.Label(out_head, text=T("清空"), bg="#2A3A5A", fg=DASH_MUTED,
+                       font=("Microsoft YaHei UI", 8), padx=7, pady=1, cursor="hand2")
+        clr.pack(side="right")
+        clr.bind("<Button-1>", lambda e: self._clear_log())
+
+        log_wrap = tk.Frame(dash, bg=DASH_PANEL,
+                            highlightbackground="#233153", highlightthickness=1)
+        log_wrap.pack(fill="both", expand=False, padx=12, pady=(0, 12))
+        self.log_text = tk.Text(log_wrap, height=12, bg=DASH_PANEL, fg=DASH_TEXT,
+                                font=("Consolas", 8), relief="flat", wrap="word",
+                                insertbackground=DASH_TEXT, padx=7, pady=5,
+                                selectbackground="#2A3A5A")
+        log_scroll = tk.Scrollbar(log_wrap, orient="vertical",
+                                  command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_scroll.set)
+        log_scroll.pack(side="right", fill="y")
+        self.log_text.pack(side="left", fill="both", expand=True)
+        self.log_text.tag_config("ok", foreground="#22C55E")
+        self.log_text.tag_config("warn", foreground="#FBBF24")
+        self.log_text.tag_config("ask", foreground="#93B4FF")
+        self.log_text.tag_config("ans", foreground="#E8EEFF")
+        self.log_text.configure(state="disabled")
 
     def _make_dash(self):
         """按板块创建可视化视图集合。"""
@@ -499,7 +528,7 @@ class App:
             views["heat"] = V.HeatmapView(c, 0, 0, W, 330, T("转移概率矩阵（行→列）"))
             views["gen"] = V.LineChart(c, 0, 340, W, 520, T("生成进度"), 0, 1)
         elif bid == "qa":
-            views["bar"] = V.LineChart(c, 0, 0, W, 200, T(T("匹配得分")), 0, 1)
+            views["qa"] = V.QAPanel(c, 0, 0, W, 340, T("回答"))
         elif bid == "classic":
             views["scatter"] = V.ScatterView(c, 0, 0, W, 380, T("数据 / 决策边界"))
             views["curve"] = V.LineChart(c, 0, 390, W, 620, T("指标曲线"), 0, 1)
@@ -898,6 +927,7 @@ class App:
                                            "先从左侧拖一个出来放在最上面。"))
             return
         self._reset_ctx()
+        self._clear_log()
         self.running = True
         self.status.configure(text=T("运行中…"), fg="#22C55E")
         self.script_gen = self._all_scripts(hats)
@@ -1111,8 +1141,10 @@ class App:
             ans, hit, score, ok = c["qa"].answer(q)
             mark = T("✓命中") if ok else T("✗未命中")
             self._log(T("问：") + f"{q}")
-            self._log(T("答：") + f"{ans}  [{mark} " + T("分=") + f"{score:.2f} " + T("命中词=") + f"{hit}]")
-            self._update_qa_view(score, ok, hit)
+            self._log(T("答：") + f"{ans}")
+            self._log("     " + f"{mark}   " + T("分=") + f"{score:.2f}   "
+                      + T("命中词=") + f"{hit}")
+            self._update_qa_view(q, ans, score, ok, hit)
 
         elif op == "knn_query":
             if c["dataset"] is None:
@@ -1309,21 +1341,62 @@ class App:
         grid = m.decision_grid(bounds, 26) if m else None
         v.draw(ds, grid, bounds, highlight=[(sx, sy, "query")])
 
-    def _update_qa_view(self, score, ok, hit):
-        v = self.dash.get("bar")
+    def _update_qa_view(self, q, ans, score, ok, hit):
+        h = self.ctx.setdefault("qa_history", [])
+        h.insert(0, (q, ans, score, ok, hit))
+        del h[6:]
+        v = self.dash.get("qa")
         if not v:
             return
-        vals = [max(0.0, min(1.0, score))]
-        v.draw([(vals, ACCENT_2 if ok else "#F25C54", T("匹配得分"))])
+        try:
+            v.draw(h)
+        except Exception:
+            pass
 
     def _log(self, text):
+        """往右侧输出区写一行，同时更新底部状态栏。"""
         self.ctx["log"].append(text)
         try:
             self.status.configure(text=str(text)[:70], fg=DASH_MUTED)
         except Exception:
             pass
-        lg = self.dash.get("logview")
-        if lg is None and hasattr(self, "log_text"):
+        self._append_log(text)
+
+    def _append_log(self, text):
+        t = getattr(self, "log_text", None)
+        if t is None:
+            return
+        s = str(text)
+        if s.startswith("✓"):
+            tag = "ok"
+        elif s.startswith("⚠"):
+            tag = "warn"
+        elif s.startswith(T("问：")) or s.startswith(T("你：")):
+            tag = "ask"
+        elif s.startswith(T("答：")) or s.startswith(T("它：")):
+            tag = "ans"
+        else:
+            tag = ""
+        try:
+            t.configure(state="normal")
+            t.insert("end", s + "\n", tag)
+            lines = int(t.index("end-1c").split(".")[0])
+            if lines > 400:
+                t.delete("1.0", "100.0")
+            t.see("end")
+            t.configure(state="disabled")
+        except tk.TclError:
+            pass
+
+    def _clear_log(self):
+        t = getattr(self, "log_text", None)
+        if t is None:
+            return
+        try:
+            t.configure(state="normal")
+            t.delete("1.0", "end")
+            t.configure(state="disabled")
+        except tk.TclError:
             pass
 
     def _current_model(self, c, name):
@@ -1744,6 +1817,7 @@ class App:
         self.workspace_blocks = []
         self._reset_ctx()
         self._clear_dash()
+        self._clear_log()
         self.status.configure(text=T("已清空"), fg=DASH_MUTED)
 
     def _clear_dash(self):
