@@ -723,8 +723,11 @@ class App:
             self._begin_inline_edit(blk, hit, cx, cy)
             return
         self._detach(blk)
+        subtree = set()
+        for x in self._iter_all(blk):
+            subtree.add(id(x))
         self.workspace_blocks = [w for w in self.workspace_blocks
-                                 if w is not blk and not self._is_descendant(w, blk)]
+                                 if w is not blk and id(w) not in subtree]
         self.workspace_blocks.append(blk)
         self.drag = {"mode": "move", "block": blk, "off_x": cx - blk.x,
                      "off_y": cy - blk.y, "target": None}
@@ -836,25 +839,41 @@ class App:
             return
         self._move_chain_to(blk, sx, sy)
         if mode == "below":
+            old_next = target.next_block
             target.next_block = blk
             blk.parent = target
+            if old_next is not None and old_next is not blk:
+                tail = self._chain_tail(blk)
+                if tail is not None and tail is not old_next:
+                    tail.next_block = old_next
+                    old_next.parent = tail
         else:
             blk.slot_owner = target
             target.children.append(blk)
             blk.parent = target
         top = blk
-        while top.parent is not None or top.slot_owner is not None:
+        guard = 0
+        while (top.parent is not None or top.slot_owner is not None) and guard < 1000:
             top = top.parent or top.slot_owner
+            guard += 1
         top.relayout_all()
         self._normalize_roots()
 
+    def _chain_tail(self, b):
+        guard = 0
+        while b is not None and b.next_block is not None and guard < 1000:
+            b = b.next_block
+            guard += 1
+        return b
+
     def _detach(self, block):
-        p = block.parent
-        if p is not None and getattr(p, "next_block", None) is block:
-            p.next_block = None
-            p.relayout_all()
-        for owner in list(self.workspace_blocks) + [b for b in self._all_blocks()]:
-            if block in getattr(owner, "children", []):
+        for owner in (block.parent, block.slot_owner):
+            if owner is None:
+                continue
+            if getattr(owner, "next_block", None) is block:
+                owner.next_block = None
+                owner.relayout_all()
+            elif block in getattr(owner, "children", []):
                 owner.children.remove(block)
                 owner.relayout_all()
         block.parent = None
@@ -870,8 +889,19 @@ class App:
         roots = []
         for w in list(self.workspace_blocks):
             r = w
-            while r.parent is not None or r.slot_owner is not None:
-                r = r.parent or r.slot_owner
+            guard = 0
+            while guard < 1000:
+                p = r.parent or r.slot_owner
+                if p is None:
+                    break
+                attached = (getattr(p, "next_block", None) is r) or \
+                           (r in getattr(p, "children", []))
+                if not attached:
+                    r.parent = None
+                    r.slot_owner = None
+                    break
+                r = p
+                guard += 1
             if r not in roots:
                 roots.append(r)
         self.workspace_blocks = roots
@@ -907,16 +937,36 @@ class App:
         ent.select_range(0, "end")
         ent.focus_set()
 
+        def _alive():
+            try:
+                return bool(ent.winfo_exists())
+            except tk.TclError:
+                return False
+
         def commit(e=None):
+            if not _alive():
+                return
             try:
                 blk.values[idx] = ent.get()
-            finally:
+            except tk.TclError:
+                pass
+            try:
                 ent.destroy()
-                blk.redraw_values()
+            except tk.TclError:
+                pass
+            blk.redraw_values()
+
+        def cancel(e=None):
+            if not _alive():
+                return
+            try:
+                ent.destroy()
+            except tk.TclError:
+                pass
 
         ent.bind("<Return>", commit)
         ent.bind("<FocusOut>", commit)
-        ent.bind("<Escape>", lambda e: ent.destroy())
+        ent.bind("<Escape>", cancel)
 
     def on_run(self):
         if self.running:
@@ -1865,6 +1915,7 @@ class App:
         top = self.workspace_blocks[0] if self.workspace_blocks else None
         if top:
             top.relayout_all()
+        self._normalize_roots()
         self.status.configure(text=T("已载入示例，点「运行」开始"), fg="#22C55E")
 
     def on_save(self):
